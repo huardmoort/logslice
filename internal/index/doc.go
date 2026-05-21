@@ -1,23 +1,23 @@
-// Package index provides byte-offset indexing for log files to enable
-// fast seeking into large files without scanning from the beginning.
+// Package index provides log file indexing for fast time-range lookups.
 //
-// # Overview
+// An index maps timestamps to byte offsets within a log file, allowing
+// the slicer to seek directly to the relevant portion of a large file
+// rather than scanning from the beginning.
 //
-// An Index is built by scanning a log file and recording the byte offset
-// and parsed timestamp of each line. Once built, FindRange can locate
-// the byte offsets that bracket a requested time range, allowing the
-// slicer to seek directly to the relevant portion of the file.
+// # Building an Index
+//
+// Use Build to scan a log file and produce an Index:
+//
+//	idx, err := index.Build(filename, format)
+//
+// # Finding a Range
+//
+// Use FindRange to locate the byte offsets for a time range:
+//
+//	start, end, err := idx.FindRange(from, to)
 //
 // # Caching
 //
-// The Cache type wraps Index construction with an in-memory LRU-style
-// store keyed by file path (or any string identifier). A configurable
-// TTL controls how long entries remain valid before being rebuilt on
-// the next access.
-//
-// # Usage
-//
-//	cache := index.NewCache(5 * time.Minute)
-//	idx, err := cache.GetOrBuild(filePath, readSeeker, timestampFormat)
-//	start, end, ok := idx.FindRange(from, to)
+// NewCache wraps Build with an in-memory TTL cache keyed by filename,
+// so repeated queries against the same file avoid redundant I/O.
 package index
