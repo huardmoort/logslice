@@ -1,4 +1,4 @@
-// Package index provides byte-offset indexing for fast seeking within log files.
+// Package index provides offset-based indexing for fast log file seeking.
 package index
 
 import (
@@ -9,69 +9,56 @@ import (
 	"github.com/yourorg/logslice/internal/parser"
 )
 
-// Entry represents a single indexed line with its timestamp and byte offset.
+// Entry represents a single indexed line with its byte offset and parsed time.
 type Entry struct {
 	Offset    int64
 	Timestamp time.Time
-	Line      int
+	Line      string
 }
 
-// Index holds all entries for a log file.
+// Index holds all entries built from a log source.
 type Index struct {
 	Entries []Entry
 }
 
-// Build reads from r and constructs an index of timestamp entries.
+// Build reads all lines from r and constructs an Index by parsing timestamps.
 // Lines that cannot be parsed are skipped.
 func Build(r io.ReadSeeker, format string) (*Index, error) {
 	if _, err := r.Seek(0, io.SeekStart); err != nil {
 		return nil, err
 	}
 
-	idx := &Index{}
-	scanner := bufio.NewScanner(r)
+	var entries []Entry
 	var offset int64
-	lineNum := 0
+	scanner := bufio.NewScanner(r)
 
 	for scanner.Scan() {
-		lineNum++
 		line := scanner.Text()
 		ts, err := parser.ParseTimestampWithFormat(line, format)
 		if err == nil {
-			idx.Entries = append(idx.Entries, Entry{
+			entries = append(entries, Entry{
 				Offset:    offset,
 				Timestamp: ts,
-				Line:      lineNum,
+				Line:      line,
 			})
 		}
-		offset += int64(len(scanner.Bytes())) + 1
+		offset += int64(len(line)) + 1 // +1 for newline
 	}
 
-	return idx, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	return &Index{Entries: entries}, nil
 }
 
-// FindRange returns the byte offsets [start, end) that cover entries
-// whose timestamps fall within [from, to].
-func (idx *Index) FindRange(from, to time.Time) (startOffset, endOffset int64, found bool) {
-	if len(idx.Entries) == 0 {
-		return 0, 0, false
-	}
-
-	start := -1
-	end := len(idx.Entries) - 1
-
-	for i, e := range idx.Entries {
-		if !e.Timestamp.Before(from) && start == -1 {
-			start = i
-		}
-		if !e.Timestamp.After(to) {
-			end = i
+// FindRange returns the slice of entries whose timestamps fall within [from, to].
+func (idx *Index) FindRange(from, to time.Time) []Entry {
+	var result []Entry
+	for _, e := range idx.Entries {
+		if parser.InRange(e.Timestamp, from, to) {
+			result = append(result, e)
 		}
 	}
-
-	if start == -1 || start > end {
-		return 0, 0, false
-	}
-
-	return idx.Entries[start].Offset, idx.Entries[end].Offset, true
+	return result
 }
