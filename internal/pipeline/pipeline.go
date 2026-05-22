@@ -1,59 +1,87 @@
-// Package pipeline wires together reader, slicer, filter, and formatter
-// into a single processing pass over a log file.
+// Package pipeline wires together all logslice components into a
+// single end-to-end processing run.
 package pipeline
 
 import (
 	"io"
 
-	"github.com/yourorg/logslice/internal/config"
-	"github.com/yourorg/logslice/internal/filter"
-	"github.com/yourorg/logslice/internal/formatter"
-	"github.com/yourorg/logslice/internal/reader"
-	"github.com/yourorg/logslice/internal/slicer"
-	"github.com/yourorg/logslice/internal/stats"
+	"github.com/example/logslice/internal/filter"
+	"github.com/example/logslice/internal/formatter"
+	"github.com/example/logslice/internal/highlight"
+	"github.com/example/logslice/internal/reader"
+	"github.com/example/logslice/internal/sampler"
+	"github.com/example/logslice/internal/slicer"
+	"github.com/example/logslice/internal/stats"
 )
 
-// Result holds the outcome of a pipeline run.
-type Result struct {
-	Stats *stats.Stats
+// Config carries all parameters for a pipeline run.
+type Config struct {
+	Input       io.Reader
+	Output      io.Writer
+	From        string
+	To          string
+	Format      string
+	Pattern     string
+	Exclude     string
+	Highlight   string
+	SampleMode  string // "nth" or "random"; empty disables sampling
+	SampleRate  int    // ignored when SampleMode is ""
+	SampleSeed  int64
 }
 
-// Run executes the full log-slicing pipeline using the provided config,
-// reading from r and writing output to w.
-func Run(cfg *config.Config, r io.Reader, w io.Writer) (*Result, error) {
+// Run executes the full pipeline and returns collected statistics.
+func Run(cfg Config) (*stats.Stats, error) {
+	lr := reader.NewLineReaderFromReader(cfg.Input)
+
 	st := stats.New()
-	st.Start()
-	defer st.Stop()
 
-	lr := reader.NewLineReaderFromReader(r)
-
-	fmt, err := formatter.ParseFormat(cfg.Format)
-	if err != nil {
-		return nil, err
+	var smp *sampler.Sampler
+	if cfg.SampleMode != "" {
+		rate := cfg.SampleRate
+		if rate < 1 {
+			rate = 1
+		}
+		var err error
+		smp, err = sampler.New(cfg.SampleMode, rate, cfg.SampleSeed)
+		if err != nil {
+			return nil, err
+		}
 	}
-	fw := formatter.NewWriter(w, fmt)
 
 	f, err := filter.New(cfg.Pattern, cfg.Exclude)
 	if err != nil {
 		return nil, err
 	}
 
-	lines, sliceErr := slicer.Slice(lr, cfg.From, cfg.To, cfg.TimestampFormat)
-	if sliceErr != nil {
-		return nil, sliceErr
+	h, err := highlight.New(cfg.Highlight)
+	if err != nil {
+		return nil, err
 	}
 
-	for _, line := range lines {
+	fmt, err := formatter.ParseFormat(cfg.Format)
+	if err != nil {
+		return nil, err
+	}
+	w := formatter.NewWriter(cfg.Output, fmt)
+
+	lines, err := slicer.Slice(lr, cfg.From, cfg.To)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, l := range lines {
 		st.RecordRead()
-		if !f.IsEmpty() && !f.Match(line.Text) {
-			st.RecordSkipped()
+		if smp != nil && !smp.Keep() {
+			continue
+		}
+		if !f.Match(l.Text) {
 			continue
 		}
 		st.RecordMatched()
-		if err := fw.WriteLine(line); err != nil {
-			return nil, err
+		l.Text = h.Apply(l.Text)
+		if err := w.WriteLine(l); err != nil {
+			return st, err
 		}
 	}
-
-	return &Result{Stats: st}, nil
+	return st, nil
 }
