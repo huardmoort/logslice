@@ -44,6 +44,14 @@ func TestValidateToBeforeFrom(t *testing.T) {
 	}
 }
 
+func TestValidateToEqualFrom(t *testing.T) {
+	c := baseConfig()
+	c.To = c.From
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected error when --to equals --from")
+	}
+}
+
 func TestValidateDefaultFormat(t *testing.T) {
 	c := baseConfig()
 	c.OutputFormat = ""
